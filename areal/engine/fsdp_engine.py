@@ -345,7 +345,9 @@ class FSDPEngine(TrainEngine):
 
         parallel_strategy = self._make_parallel_strategy(parallel_strategy)
 
-        self.parallel_helper = ParallelHelper.from_parallel_strategy(parallel_strategy)
+        self.parallel_helper = ParallelHelper.from_parallel_strategy(
+            parallel_strategy, fsdp_size=self.config.fsdp.fsdp_size
+        )
 
         self.logger.info(
             f"Initializing device mesh with parallel dims {str(self.parallel_helper)}."
@@ -369,7 +371,12 @@ class FSDPEngine(TrainEngine):
 
         # Eagerly initialize HCCL/NCCL communicators for the subgroups so
         # that lazy init doesn't race with colocated engines (issue #1099).
-        warmup_process_groups(self.dp_group, self.sp_group, self.mp_group)
+        warmup_process_groups(
+            self.dp_group,
+            self.sp_group,
+            self.mp_group,
+            self.parallel_helper.fsdp_shard_group,
+        )
 
     def initialize(self, addr: str | None, ft_spec: FinetuneSpec, *args, **kwargs):
         # Initialize distributed enviroments and load model.
@@ -687,7 +694,7 @@ class FSDPEngine(TrainEngine):
         grad_norm = fsdp2_clip_grad_norm(
             list(self.model.parameters()),
             max_norm=self.optimizer_config.gradient_clipping,
-            fsdp_group=self.world_mesh["dp_sp"].get_group(),
+            fsdp_group=self.parallel_helper.fsdp_shard_group,
             tp_group=self.world_mesh["tp"].get_group(),
             offload_params=self.config.fsdp.offload_params,
         )

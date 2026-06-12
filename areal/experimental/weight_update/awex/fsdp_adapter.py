@@ -56,7 +56,7 @@ class AwexFSDPAdapter(AwexTrainingAdapter):
             "pp_size": 1,
             "dp_size": self._engine.data_parallel_world_size,
             "ep_size": 1,
-            "dp_replicated": False,
+            "dp_replicated": self._engine.parallel_helper.uses_hsdp,
         }
 
     @property

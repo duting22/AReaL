@@ -99,6 +99,29 @@ actor:
   backend: "fsdp:d4t2"      # 4 × 2 = 8 GPUs
 ```
 
+### FSDP Shard Size
+
+For the FSDP backend, `d` controls the training data-parallel size used for batch
+dispatch. By default, FSDP shards over all data/context-parallel ranks:
+
+```
+fsdp_shard_size = d * c
+```
+
+Set `actor.fsdp.fsdp_size` to keep the FSDP shard group fixed while increasing
+`d`. The value must be a positive divisor of `d * c`. For example:
+
+```yaml
+actor:
+  backend: "fsdp:d8p1t1"
+  fsdp:
+    fsdp_size: 4
+```
+
+This uses 8 data-parallel batch partitions but shards each model replica over 4
+ranks, creating 2 FSDP replica groups. Leaving `fsdp_size: -1` preserves the
+previous behavior and shards over all `d * c` ranks.
+
 ## Backend Selection
 
 ### Inference Backends

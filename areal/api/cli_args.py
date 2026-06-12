@@ -415,6 +415,16 @@ class FSDPWrapPolicy:
 class FSDPEngineConfig:
     """Configuration for Fully Sharded Data Parallel (FSDP) training backend."""
 
+    fsdp_size: int = field(
+        default=-1,
+        metadata={
+            "help": "FSDP shard group size over the data/context-parallel ranks. "
+            "-1 uses all data/context-parallel ranks, preserving the previous full-shard behavior. "
+            "Set a positive divisor of data_parallel_size * context_parallel_size "
+            "to enable hybrid sharding with fixed FSDP shard size while increasing "
+            "data parallelism."
+        },
+    )
     wrap_policy: FSDPWrapPolicy | None = field(
         default=None,
         metadata={"help": "FSDP wrap policy, specifying model layers to wrap."},
@@ -448,6 +458,10 @@ class FSDPEngineConfig:
     )
 
     def __post_init__(self):
+        if self.fsdp_size == 0 or self.fsdp_size < -1:
+            raise ValueError(
+                f"fsdp_size must be -1 or a positive integer, got {self.fsdp_size}"
+            )
         if self.optim_step_prefetch_layers < 0:
             raise ValueError(
                 f"optim_step_prefetch_layers must be >= 0, got {self.optim_step_prefetch_layers}"

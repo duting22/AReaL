@@ -36,17 +36,25 @@ __all__ = ["ReplicateParallel", "ParallelHelper", "parallelize_model"]
 @dataclass
 class ParallelHelper:
     _ps: FSDPParallelStrategy
+    fsdp_size: int = -1
     _world_mesh: DeviceMesh | None = None
+    _fsdp_mesh: DeviceMesh | None = None
 
     @classmethod
-    def from_parallel_strategy(cls, fsdp_ps: FSDPParallelStrategy) -> "ParallelHelper":
+    def from_parallel_strategy(
+        cls, fsdp_ps: FSDPParallelStrategy, fsdp_size: int = -1
+    ) -> "ParallelHelper":
         assert fsdp_ps.pp_size == 1, "Pipeline parallelism is not supported in FSDP"
 
-        return cls(_ps=fsdp_ps)
+        return cls(_ps=fsdp_ps, fsdp_size=fsdp_size)
 
     def __str__(self) -> str:
         _ps = self._ps
-        return f"(dp={_ps.dp_size}, sp={_ps.cp_size}, tp={_ps.tp_size}, ep={_ps.ep_size}, etp={_ps.etp_size}, world_size={_ps.world_size})"
+        return (
+            f"(dp={_ps.dp_size}, sp={_ps.cp_size}, tp={_ps.tp_size}, "
+            f"ep={_ps.ep_size}, etp={_ps.etp_size}, "
+            f"fsdp_size={self.effective_fsdp_size}, world_size={_ps.world_size})"
+        )
 
     def __post_init__(self):
         self._validate()
@@ -68,7 +76,26 @@ class ParallelHelper:
                 f"Invalid parallel dims: dp({dp}) * sp({sp}) * tp({tp}) != WORLD_SIZE({world_size})"
             )
 
+        dp_sp = dp * sp
+        if self.fsdp_size == 0 or self.fsdp_size < -1:
+            raise ValueError(
+                f"fsdp_size must be -1 or a positive integer, got {self.fsdp_size}"
+            )
+        if self.fsdp_size > dp_sp:
+            raise ValueError(
+                f"fsdp_size ({self.fsdp_size}) must be <= dp * sp ({dp_sp})"
+            )
+        if self.fsdp_size > 0:
+            if dp_sp % self.fsdp_size != 0:
+                raise ValueError(
+                    f"dp * sp ({dp_sp}) must be divisible by fsdp_size ({self.fsdp_size})"
+                )
+
         if ep > 1:
+            if self.uses_hsdp:
+                raise ValueError(
+                    "Custom fsdp_size is not supported with expert parallelism yet"
+                )
             assert etp == tp or etp == 1, "Currently we only support ETP=TP or ETP=1"
             if etp == tp:
                 # ep would borrow all sp and some dp degree
@@ -147,6 +174,22 @@ class ParallelHelper:
         return self._world_mesh
 
     @property
+    def fsdp_root_mesh(self) -> DeviceMesh:
+        if not self.uses_hsdp:
+            return self.world_mesh
+        if self._fsdp_mesh is None:
+            self._fsdp_mesh = init_device_mesh(
+                current_platform.device_type,
+                mesh_shape=(
+                    self.fsdp_replicate_size,
+                    self.effective_fsdp_size,
+                    self.tp_size,
+                ),
+                mesh_dim_names=("fsdp_replicate", "fsdp", "tp"),
+            )
+        return self._fsdp_mesh
+
+    @property
     def dp_enabled(self) -> bool:
         return self._ps.dp_size > 1
 
@@ -185,6 +228,36 @@ class ParallelHelper:
     @property
     def etp_size(self) -> int:
         return self._ps.etp_size
+
+    @property
+    def dp_sp_size(self) -> int:
+        return self._ps.dp_size * self._ps.cp_size
+
+    @property
+    def effective_fsdp_size(self) -> int:
+        if self.fsdp_size < 0:
+            return self.dp_sp_size
+        return self.fsdp_size
+
+    @property
+    def uses_hsdp(self) -> bool:
+        return 0 < self.effective_fsdp_size < self.dp_sp_size
+
+    @property
+    def fsdp_replicate_size(self) -> int:
+        return self.dp_sp_size // self.effective_fsdp_size
+
+    @property
+    def fsdp_mesh(self) -> DeviceMesh:
+        if self.uses_hsdp:
+            return self.fsdp_root_mesh["fsdp_replicate", "fsdp"]
+        return self.world_mesh["dp_sp"]
+
+    @property
+    def fsdp_shard_group(self) -> ProcessGroup:
+        if self.uses_hsdp:
+            return self.fsdp_root_mesh["fsdp"].get_group()
+        return self.world_mesh["dp_sp"].get_group()
 
     @property
     def dp_group(self) -> ProcessGroup:
@@ -387,8 +460,7 @@ def parallelize_model(
         cast_forward_inputs=True,
     )
     fsdp_kwargs = {
-        # This dim is guaranteed to exist by FSDPParallelDims
-        "mesh": nd_device_mesh["dp_sp"],
+        "mesh": parallel_helper.fsdp_mesh,
         "mp_policy": mixed_precision_policy,
         "offload_policy": cpu_offload,
         "reshard_after_forward": True,
