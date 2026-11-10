@@ -108,3 +108,41 @@ checkpoint manifest. These checks do not replace actual distributed optimizer lo
 The independent experiment observer and logp/GDN diagnostic candidates are outside this
 recipe. FA3 adapters, forced stable top-k, cache isolation and tensor replay patches are
 not added by these files.
+
+## Subtask multi-stream training
+
+Select `train_subtask_multi_stream_bs64.yaml` for subtask RL with the training settings
+from Slurm job `992868`. It uses BS64 / GS12, a minimum usable group size of 8, GRPO
+standard-deviation normalization, 128K context, and 16 nodes. Training runs for 100
+epochs without a step cap. Dynamic filtering, periodic checkpoints, and recovery are
+disabled, matching that job. The embedding cache setting is left unchanged; the
+reference job's explicit 100 MB override is not added.
+
+The preset includes six Streams: Three.js st7, Three.js st4, Amara component, Amara
+compose, Three.js coloring golden048, and component planning v15. Amara component
+contains parts 1–6 and Amara compose contains parts 1–10; both require per-task reward
+and Harness bindings from the corresponding source part Streams. Their single default
+reward cannot grade every oracle schema. Prepare these bindings under `EXPERIMENT_ROOT`
+using the published `1.0.0-binary-pass-20261110` rewards and source Harness pins. St7
+and st4 use their default Harness and per-task reward mappings. The coloring asset
+Stream explicitly uses `areal-harness@0.1.4-weak-harness-noskill-generic-input-v2` and a
+per-task reward mapping under `EXPERIMENT_ROOT`, since it has no default Harness or
+reward. Component planning uses its default Harness
+`areal-harness@0.1.4-component-planning-native-v2` and its own per-task reward mapping,
+since it has no default reward. Keep each Stream name and mapping file unique.
+
+All `sampling_weight` values are 1 and `arena_mixture_epoch_size` is 0. The shuffled
+base schedule samples Streams in proportion to their source row counts. Set the source
+task counts to control the mixture. Keep `QWEN_EQUAL_STREAM_SAMPLING` unset in the site
+profile so the entrypoint does not replace this schedule with equal Stream shares.
+
+In a new trial's site profile, set:
+
+```bash
+QWEN_TRAIN_CONFIG=train_subtask_multi_stream_bs64.yaml
+QWEN_ARENA_TRIAL=subtask-bs64gs12-$(date +%m%d-%H%M)
+```
+
+Then submit through the existing `submit.sh` using that profile. The submission script
+sources the profile, so select this config there rather than relying on an environment
+override of a profile that already sets `QWEN_TRAIN_CONFIG`.

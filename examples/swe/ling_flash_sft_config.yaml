@@ -1,0 +1,232 @@
+
+exp_name: ling-flash-sft
+model:
+  pretrained_model_name_or_path:  /mnt/exp/moe-lite/linzibin.lzb/sft_experiments/model_0312
+pipeline_type: SFTPipeline
+train_data:
+  dataset:
+    type: &dataset_type antllm.data.sft_pre_pack.sft_packed_dataset.SFTPackedDataset
+    args:
+      data_path: &train_data_path 'xxx'
+      save_path: &train_save_path '/input/xxxx/sft_experiments/ling-flash-sft/train'
+    pack_args:
+      data_path: *train_data_path
+      save_path: *train_save_path
+      max_length: &max_length 131072
+      rotary_type: 'full-1d'
+      context_parallel_size: &cp_size 16
+      use_compatible_mode: true
+      skip_abnormal_data: true
+      max_pack_sample_num: 100
+  data_loader:
+    args:
+      drop_last: true
+test_data:
+  dataset:
+    type: *dataset_type
+    args:
+      data_path: *train_data_path
+      save_path: *train_save_path
+  data_loader:
+    args:
+      drop_last: true
+trainer:
+  args:
+    output_dir: /input/xxxx/sft_experiments/ling-flash-sft
+    ant_config:
+      ais_save_path: /mnt/exp/moe-lite/xxxx/sft/ling-flash-sft
+    ddp_backend: nccl
+    ddp_timeout: 2100
+    distributed_type: megatron
+    do_eval: false
+    do_train: true
+    empty_cache_steps: 2000
+    eval_steps: 2000
+    evaluation_strategy: 'no'
+    extra_configs:
+      global_batch_size: 128
+      lr: 3e-05
+      micro_batch_size: 1
+      tokenizer_model: /workspace/bin/antllm-resource/bailing_tokenizer_v2/config_ling
+      tokenizer_type: BailingTokenizer
+
+      use_flash_attn: true
+      group_query_attention: false
+      multi_latent_attention: true
+      use_mcore_models: true
+      sequence_parallel: true
+      # linear
+      layer_group_size: 8
+      linear_attn_num_query_groups: 32
+      linear_attn_norm_group_size: 4
+      linear_attn_norm_group_type: group_diff
+      use_linear_silu: false
+      # MLA
+      q_lora_rank: 1536
+      kv_lora_rank: 512
+      qk_head_dim: 128
+      qk_pos_emb_head_dim: 64
+      v_head_dim: 128
+      hidden_size: 4096
+      moe_ffn_hidden_size: 1024
+      ffn_hidden_size: 9216
+      num_attention_heads: 32
+      num_query_groups: 32
+      seq_length: *max_length
+      max_position_embeddings: *max_length
+      rotary_base: 6000000
+      rotary_percent: 0.5
+      position_embedding_type: rope
+      vocab_size: 157184
+      first_k_dense_replace: 1
+      expert_model_parallel_size: 8
+      tensor_model_parallel_size: 1
+      expert_tensor_parallel_size: 1
+      pipeline_model_parallel_size: 4
+      pipeline_model_parallel_layout: E(ttttttttt|)*3tttttmL
+      # pipeline_model_parallel_layout: E(t)*8|(t)*9|(t)*9|(t)*6L
+      context_parallel_size: *cp_size
+      cp_comm_type: p2p
+      moe_permute_fusion: false
+      apply_rope_fusion: true
+      create_attention_mask_in_dataloader: false
+      use_concatenate_attention_mask: true
+      linear_attn_forloop1_fused: true
+      linear_attn_forloop2_fused: true
+      # 开启FP8
+      # moe_token_dispatcher_type: alltoall
+      moe_token_dispatcher_type: flex
+      moe_enable_deepep: True
+      # fp8_param_gather: true
+      # fp8_recipe: blockwise
+      # fp8_format: e4m3
+      # fp8: e4m3
+      # disable_gloo_group: true # 使用 hccl 通信代替 gloo
+      # fp8_strategy: tileblock-wise
+      # #tensor_inspect_interval: 100 # 耗时较长，降低频率
+      # #tensor_inspect_high_precision_interval: 100 # 开启 FP8 高精度重算，与 tp>1 不兼容
+      # # #首尾bf16
+      # first_last_layers_bf16: true
+      # num_layers_at_start_in_bf16: 1
+      # num_layers_at_end_in_bf16: 1
+      # 开启MTP
+      mtp_num_layers: 1
+      mtp_loss_scaling_factor: 0.1
+      adam_beta1: 0.9
+      adam_beta2: 0.95
+      add_bias_linear: false
+      async_save: false
+      attention_dropout: 0.0
+      attention_softmax_in_fp32: true
+      auto_detect_ckpt_format: true
+      bf16: true
+      bias_zero_mean_update: true
+      chunk_alpha: 3.0
+      ckpt_format: torch_dist
+      ckpt_fully_parallel_save: true
+      clip_grad: 1.0
+      cross_entropy_loss_fusion: true
+      distributed_backend: nccl
+      distributed_timeout_minutes: 6000
+      enable_one_logger: false
+      exit_on_missing_checkpoint: true
+      gradient_accumulation_fusion: true
+      hidden_dropout: 0.0
+      init_method_std: 0.006
+      log_interval: 1
+      log_loss_scale_to_tensorboard: false
+      log_num_zeros_in_grad: true
+      log_params_norm: true
+      log_throughput: true
+      log_timers_to_tensorboard: true
+      log_validation_ppl_to_tensorboard: true
+      loss_func: global_token_level_cross_entropy
+      lr_decay_style: cosine
+      lr_warmup_iters: 50
+      make_vocab_size_divisible_by: 128
+      masked_softmax_fusion: true
+      model_type_name: llama
+      moe_grouped_gemm: true
+      moe_layer_freq:
+      - 0
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      moe_router_bias_update_rate: 0.0
+      moe_router_dtype: fp32
+      moe_router_enable_expert_bias: true
+      moe_router_group_topk: 4
+      moe_router_num_groups: 8
+      moe_router_score_function: sigmoid
+      moe_router_topk: 8
+      moe_router_topk_scaling_factor: 2.5
+      moe_shared_expert_intermediate_size: 1024
+      moe_shared_expert_overlap: false
+      moe_z_loss_coeff: 3.5e-06
+      no_load_optim: true
+      no_load_rng: true
+      no_save_optim: true
+      norm_epsilon: 1.0e-06
+      normalization: RMSNorm
+      num_experts: 256
+      num_layers: 32
+      num_workers: 2
+      optim_normhead_fwd_alltoall: true
+      overlap_grad_reduce: true
+      overlap_p2p_comm: true
+      override_opt_param_scheduler: true
+      profile_npu: false
+      qk_layernorm: true
+      recompute_granularity: full
+      recompute_method: uniform
+      recompute_num_layers: 1
+      router_warmup_step: 0
+      skip_casting_dtype_for_param_pattern: ^expert_bias$|.+\.expert_bias$|^local_tokens_per_expert$|.+\.local_tokens_per_expert$
+      swiglu: true
+      tensorboard_log_interval: 1
+      untie_embeddings_and_output_weights: true
+      use_distributed_optimizer: true
+      use_init_chunk: true
+      use_norm_head: false
+      use_random_logits: false
+      use_rotary_position_embeddings: true
+      weight_decay: 0.1
+    finetune_type: sft
+    logging_steps: 1
+    manual_gc: true
+    manual_gc_interval: 1000
+    num_train_epochs: 4
+    save_steps: 2000
+    save_strategy: epoch
+    save_total_limit: 1000
+    seed: 42
+    tensorboard_dir: /home/admin/logs/tfevent
+  engine: atorch_v2

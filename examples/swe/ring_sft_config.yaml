@@ -1,0 +1,296 @@
+alert_manager:
+  timeout:
+    expected_runtime: 96
+    timeout_alert_interval: 1
+exp_name: ring_2_5_validation_release24_128k_0215_1344
+model:
+  pretrained_model_name_or_path: /input/liuyongkang.lyk/models/max_v25/moe-max-v25-e256-ep8tp1pp14cp32-fp8-256k-enhance-linghe/mean_merge_top32
+pipeline_type: SFTPipeline
+test_data:
+  data_loader:
+    args:
+      drop_last: true
+  dataset:
+    args:
+      data_path: &test_data_path 'mdata://id=379824db&name=0621ChatWizardlm&version=9efffd32c8f5094de784eccf3a03a2d738e2611c&storage=pcache&datastore=ais-pcache-mlc-dataset-yuyan&weight=1'
+      save_path: &test_save_path '/mnt/exp/moe-lite/liuyongkang.lyk/prepack-train-dataset/ring2.5_quwu_downsample-all-ep3-lr1e50102/packed_data/packed_data/t1es11t1512121231'
+      max_length: &max_length 131072
+    pack_args:
+      data_path: *test_data_path
+      save_path: *test_save_path
+      max_length: *max_length
+      rotary_type: 'full-1d'
+      use_compatible_mode: true
+      use_true_multiturn: false
+      skip_abnormal_data: true
+
+    type: antllm.data.sft_pre_pack.sft_packed_dataset.SFTPackedDataset
+train_data:
+  data_loader:
+    args:
+      drop_last: true
+  dataset:
+    args:
+      data_path: &train_data_path 'mdata://id=379824db&label=ring26_access&label_snapshot=ring26_access_main_kimi25&storage=cpfs&datastore=mdata-mlc-x-01'
+      save_path: &train_save_path '/mnt/exp/moe-lite/xingbu.lsc/prepack-train-dataset/ring25_release_expert_excludering2_01203_v20316'
+    pack_args:
+      data_path: *train_data_path
+      save_path: *train_save_path
+      max_length: *max_length
+      rotary_type: 'full-1d'
+      use_compatible_mode: true
+      use_true_multiturn: false
+      skip_abnormal_data: true
+    type: antllm.data.sft_pre_pack.sft_packed_dataset.SFTPackedDataset
+trainer:
+  args:
+    ddp_timeout: 2100
+    distributed_type: megatron
+    do_eval: false
+    do_train: true
+    empty_cache_steps: 2000
+    eval_steps: 2000
+    evaluation_strategy: 'no'
+    extra_configs:
+      adam_beta1: 0.9
+      adam_beta2: 0.95
+      add_bias_linear: false
+      apply_rope_fusion: true
+      async_save: false
+      attention_dropout: 0.0
+      attention_softmax_in_fp32: true
+      auto_detect_ckpt_format: true
+      bf16: true
+      bias_swiglu_fusion: true
+      bias_zero_mean_update: true
+      calc_grad_norm_impl: linghe
+      chunk_alpha: 3.0
+      ckpt_format: torch_dist
+      ckpt_fully_parallel_save: true
+      clip_grad: 1.0
+      clip_grad_impl: linghe
+      clip_grad_value: 1.0
+      context_parallel_size: 4
+      count_grad_zero_impl: linghe
+      cp_comm_type: p2p
+      create_attention_mask_in_dataloader: false
+      cross_entropy_fusion_impl: linghe
+      cross_entropy_loss_fusion: true
+      disable_gloo_group: true
+      distributed_backend: nccl
+      distributed_timeout_minutes: 6000
+      enable_one_logger: false
+      exit_on_missing_checkpoint: true
+      expert_model_parallel_size: 8
+      expert_tensor_parallel_size: 1
+      ffn_hidden_size: 18432
+      first_k_dense_replace: 4
+      fp8: e4m3
+      fp8_format: e4m3
+      fp8_param_gather: true
+      fp8_recipe: blockwise
+      global_batch_size: 336
+      gradient_accumulation_fusion: true
+      group_query_attention: false
+      hidden_dropout: 0.0
+      hidden_size: 8192
+      init_method_std: 0.006
+      kv_lora_rank: 512
+      layer_group_size: 8
+      linear_attn_forloop1_fused: true
+      linear_attn_forloop2_fused: true
+      linear_attn_norm_group_size: 8
+      linear_attn_norm_group_type: group_diff
+      linear_attn_num_query_groups: 64
+      linear_gate_impl: linghe
+      log_interval: 1
+      log_lm_head_weight_to_tensorboard: true
+      log_loss_scale_to_tensorboard: false
+      log_memory: true
+      log_num_zeros_in_grad: true
+      log_params_norm: true
+      log_throughput: true
+      log_timers_to_tensorboard: true
+      log_validation_ppl_to_tensorboard: true
+      loss_func: global_token_level_cross_entropy
+      lr: 5.0e-05
+      lr_decay_style: cosine
+      lr_warmup_iters: 20
+      make_vocab_size_divisible_by: 128
+      masked_softmax_fusion: true
+      max_position_embeddings: *max_length
+      micro_batch_size: 1
+      mla_use_all_to_all_cp: true
+      mlp_act_impl: linghe
+      model_type_name: gpt
+      moe_enable_deepep: true
+      moe_ffn_hidden_size: 2048
+      moe_grouped_gemm: true
+      moe_layer_freq:
+      - 0
+      - 0
+      - 0
+      - 0
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      - 1
+      moe_permute_fusion: true
+      moe_router_bias_update_rate: 0.0
+      moe_router_dtype: fp32
+      moe_router_enable_expert_bias: true
+      moe_router_fusion: true
+      moe_router_gemm_impl: linghe
+      moe_router_group_topk: 4
+      moe_router_num_groups: 8
+      moe_router_score_function: sigmoid
+      moe_router_topk: 8
+      moe_router_topk_scaling_factor: 2.5
+      moe_shared_expert_intermediate_size: 2048
+      moe_shared_expert_overlap: false
+      moe_token_dispatcher_type: flex
+      moe_z_loss_coeff: 6.49350649e-07
+      mtp_loss_scaling_factor: 0.1
+      mtp_num_layers: 1
+      multi_latent_attention: true
+      no_load_optim: false
+      no_load_rng: false
+      no_save_optim: false
+      norm_epsilon: 1.0e-06
+      normalization: RMSNorm
+      num_attention_heads: 64
+      num_experts: 256
+      num_layers: 80
+      num_query_groups: 64
+      num_workers: 2
+      optim_normhead_fwd_alltoall: true
+      overlap_grad_reduce: true
+      overlap_p2p_comm: true
+      override_opt_param_scheduler: true
+      permute_unpermute_impl: linghe
+      pipeline_model_parallel_layout: Ettt|(tt|)*18t|(tt|)*20m|L
+      pipeline_model_parallel_size: 21
+      position_embedding_type: rope
+      profile_npu: false
+      q_lora_rank: 1536
+      qk_head_dim: 128
+      qk_layernorm: true
+      qk_pos_emb_head_dim: 64
+      recompute_granularity: full
+      recompute_method: uniform
+      recompute_num_layers: 1
+      rotary_base: 6000000
+      rotary_percent: 0.5
+      router_warmup_step: 0
+      scale_grad_impl: linghe
+      seq_length: *max_length
+      sequence_parallel: true
+      skip_casting_dtype_for_param_pattern: ^expert_bias$|.+\.expert_bias$|^local_tokens_per_expert$|.+\.local_tokens_per_expert$
+      swiglu: true
+      tensor_model_parallel_size: 4
+      tensorboard_log_interval: 1
+      tokenizer_model: /workspace/bin/antllm-resource/bailing_tokenizer_v2/config_ring
+      tokenizer_type: BailingTokenizer
+      untie_embeddings_and_output_weights: true
+      use_concatenate_attention_mask: true
+      use_distributed_optimizer: true
+      use_flash_attn: true
+      use_init_chunk: true
+      use_linear_silu: false
+      use_mcore_models: true
+      use_norm_head: false
+      use_random_logits: false
+      use_rotary_position_embeddings: true
+      v_head_dim: 128
+      vocab_size: 157184
+      weight_decay: 0.1
+    extra_save_frequency_in_epoch:
+    - 0.3
+    - 0.6
+    finetune_type: sft
+    logging_steps: 1
+    manual_gc: true
+    manual_gc_interval: 500
+    num_train_epochs: 3
+    # ant_config:
+    #   ais_save_path: &output_dir  /input/liuyongkang.lyk/outputmodels/ring_2_5_max_release24_128k_0316_kimi25_ring26
+    output_dir: &output_dir  /input/liuyongkang.lyk/outputmodels/ring_2_5_max_release24_128k_0316_kimi25_ring26
+    resume_from_checkpoint: *output_dir
+    save_steps: 2000
+    save_strategy: epoch
+    save_total_limit: 1000
+    seed: 42
+    tensorboard_dir: /home/admin/logs/tfevent
+  engine: atorch_v2

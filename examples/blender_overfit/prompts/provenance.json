@@ -1,0 +1,44 @@
+{
+  "source_stream": "fine-unified115-history32-20261025",
+  "source_harness": "areal-harness-rl-history32@1.0.0",
+  "source_reward": "fine-unified115-isolated-router-20261023@1.0.3-public-input-clean-v1",
+  "source_runtime": "1.0.1-cycles128-shared-detail-v1",
+  "source_task": "online-2610261924-wo3idb:fine-unified115-isolated-20261023-fresh24-20261019-world-f040:0",
+  "judge_model": "qwen38-27b-flywheel",
+  "original_visual_weights": {
+    "quality": 0.1,
+    "detail": 0.1,
+    "aesthetics": 0.05
+  },
+  "normalized_visual_weights": {
+    "quality": 0.4,
+    "detail": 0.4,
+    "aesthetics": 0.2
+  },
+  "prompts": {
+    "qa": {
+      "artifact": "prompt-d016920b.txt",
+      "source_sha256": "167e4abca1722ad8d761f410dfc550f6ac2df1b1cb56aa222ca2528c26af0b8d",
+      "adapted_sha256": "7530430f42d6cf0cdc00ea04df0d5fbb03c98dd40dcb31de7929d0f3f39d7dc0",
+      "adaptations": [
+        "building terminology generalized to object",
+        "four original query images replace photo and auxiliary-view hierarchy",
+        "task-specific feature list removed; query-derived features frozen before candidate generation"
+      ]
+    },
+    "detail": {
+      "artifact": "prompt.txt",
+      "source_sha256": "072f24f4e6af97a7cff2df84794ac8b762848e88fc5ca04caf4e1359c388568f",
+      "adapted_sha256": "cd5b14a95d596d3644baed75f24d8fcda5dfb0ad3e75209df7ad0f4ca5b39a64",
+      "adaptations": [
+        "building terminology generalized to object",
+        "four original query images replace photo and auxiliary-view hierarchy",
+        "task-specific feature list removed; query-derived features frozen before candidate generation"
+      ]
+    }
+  },
+  "geometry_policy": "shape and structure are NOT_APPLICABLE; no reference.blend or teacher code is read",
+  "sampling_parameters_provenance": "Request receipts expose judge identity but not sampling parameters; this adapter sends no sampling overrides. Exact equivalence of provider defaults is not yet certified.",
+  "renderer_policy": "Shared deterministic Cycles128 neutral-material views for both modes; image-only adaptation does not reuse original per-building role labels or alignment.",
+  "output_protocol": "JSON object response_format enabled after a live judge emitted invalid JSON; raw responses are retained before parsing. Rubrics and numeric weights unchanged."
+}
