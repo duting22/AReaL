@@ -24,6 +24,7 @@ from areal.api import FinetuneSpec, SaveLoadMeta
 from areal.api.alloc_mode import ModelAllocation
 from areal.api.cli_args import (
     DistributedDataParallelConfig,
+    FSDPEngineConfig,
     MegatronEngineConfig,
     MicroBatchSpec,
     OptimizerConfig,
@@ -34,6 +35,7 @@ from areal.engine.megatron_utils.frozen_mtp import read_mtp_tensors
 from areal.infra.platforms import current_platform
 from areal.utils import seeding
 from areal.utils.data import broadcast_tensor_container
+from tests.utils import check_gradient_accumulation
 
 _MODEL_PATH_SPECS = {
     "qwen3": (
@@ -888,6 +890,7 @@ def main():
             "train",
             "grad_norm_mb_invariance",
             "parameter_snapshot",
+            "gradient_accumulation",
             "simple_dcp_save_load",
             "train_dcp_save_load",
             "train_hf_save_load",
@@ -895,10 +898,86 @@ def main():
         default="forward",
         help="Type of test to run: 'forward' or 'train'",
     )
+    parser.add_argument("--fsdp_cpu_offload", action="store_true")
+    parser.add_argument(
+        "--common_reference_scale",
+        action="store_true",
+        help="Align the Megatron reference backward scale for the accumulation control",
+    )
     args = parser.parse_args()
 
     print(args)
-    if args.test_type == "train":
+    if args.test_type == "gradient_accumulation":
+        if args.common_reference_scale and (
+            not args.backend.startswith("megatron:") or args.model_type != "qwen3"
+        ):
+            parser.error("--common_reference_scale requires Megatron and Qwen3")
+        if args.backend.startswith("fsdp:"):
+
+            def factory():
+                config = TrainEngineConfig(
+                    backend=args.backend,
+                    experiment_name="test",
+                    trial_name="accumulation",
+                    path=_get_model_path(args.model_type),
+                    mb_spec=MicroBatchSpec(n_mbs=4, max_tokens_per_mb=128),
+                    optimizer=OptimizerConfig(),
+                    fsdp=FSDPEngineConfig(
+                        offload_params=args.fsdp_cpu_offload,
+                        per_layer_optim_step=args.fsdp_cpu_offload,
+                        optim_step_prefetch_layers=0,
+                    ),
+                )
+                engine = FSDPEngine(config)
+                engine.create_process_group(
+                    ModelAllocation.from_str(args.backend).parallel
+                )
+                engine.initialize(
+                    None,
+                    FinetuneSpec(
+                        total_train_epochs=1, dataset_size=128, train_batch_size=16
+                    ),
+                )
+                return engine
+        else:
+
+            def factory():
+                return make_engine(
+                    args.model_type,
+                    args.backend,
+                    # Keep the control's native loss compensation binary-exact:
+                    # one 16-MB schedule versus two 8-MB schedules. The original
+                    # test retains unequal 4/8-MB chunks and a 12-MB reference.
+                    MicroBatchSpec(
+                        n_mbs=8 if args.common_reference_scale else 4,
+                        max_tokens_per_mb=128,
+                    ),
+                    init_optimizer=True,
+                    vpp_size=args.vpp_size,
+                    megatron_config=MegatronEngineConfig(
+                        virtual_pipeline_parallel_size=args.vpp_size,
+                        bridge_type="mbridge",
+                        ddp=DistributedDataParallelConfig(
+                            use_distributed_optimizer=True,
+                            overlap_grad_reduce=True,
+                            overlap_param_gather=True,
+                            align_param_gather=True,
+                        ),
+                    ),
+                )
+
+        check_gradient_accumulation(
+            factory,
+            case=(
+                f"{args.backend}, vpp_size={args.vpp_size}, "
+                f"fsdp_cpu_offload={args.fsdp_cpu_offload}, "
+                f"common_reference_scale={args.common_reference_scale}"
+            ),
+            common_reference_scale=args.common_reference_scale,
+        )
+        if args.output:
+            write_result(args.output, True)
+    elif args.test_type == "train":
         test_train(
             args.model_type,
             args.backend,

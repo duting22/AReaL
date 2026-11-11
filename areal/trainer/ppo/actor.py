@@ -354,13 +354,26 @@ class PPOActor:
         self,
         data: list[dict[str, Any]],
         n_minibatches: int | None = None,
+        *,
+        accumulation_steps: int = 1,
+        accumulation_index: int = 0,
     ) -> None:
         if n_minibatches is None:
             n_minibatches = self.config.ppo_n_minibatches
         if n_minibatches <= 0:
             raise ValueError(f"n_minibatches must be positive, got {n_minibatches}")
+        if accumulation_steps < 1 or not 0 <= accumulation_index < accumulation_steps:
+            raise ValueError("Invalid accumulation_steps or accumulation_index")
+        if accumulation_steps > 1 and n_minibatches != 1:
+            raise ValueError("Cross-chunk accumulation requires n_minibatches=1")
         batched, meta = concat_batch(data)
-        self._ppo_update(batched, meta, n_minibatches=n_minibatches)
+        self._ppo_update(
+            batched,
+            meta,
+            n_minibatches=n_minibatches,
+            accumulation_steps=accumulation_steps,
+            accumulation_index=accumulation_index,
+        )
 
     def _ppo_update(
         self,
@@ -368,6 +381,8 @@ class PPOActor:
         meta: TrajBatchMeta | None = None,
         *,
         n_minibatches: int | None = None,
+        accumulation_steps: int = 1,
+        accumulation_index: int = 0,
     ) -> None:
         if n_minibatches is None:
             n_minibatches = self.config.ppo_n_minibatches
@@ -491,10 +506,25 @@ class PPOActor:
             n_mbs=n_minibatches,
             group=self.engine.data_parallel_group,
         )
-        loss_steps = prepared_loss.for_steps(
-            mb_inputs,
-            dp_group=self.engine.data_parallel_group,
-            device=self.engine.device,
+        # A chunk is a partial optimizer window. Keep full-unit token weights,
+        # but let the engine normalize over all chunks instead of binding a
+        # separate unit mean to each chunk.
+        loss_steps = (
+            [prepared_loss.reduction]
+            if accumulation_steps > 1
+            else prepared_loss.for_steps(
+                mb_inputs,
+                dp_group=self.engine.data_parallel_group,
+                device=self.engine.device,
+            )
+        )
+        accumulation_kwargs = (
+            dict(
+                accumulation_steps=accumulation_steps,
+                accumulation_index=accumulation_index,
+            )
+            if accumulation_steps > 1
+            else {}
         )
 
         with stats_tracker.scope("update"):
@@ -521,6 +551,7 @@ class PPOActor:
                         pg_reduction=loss_step,
                     ),
                     loss_weight_fn=loss_step.normalizer_fn,
+                    **accumulation_kwargs,
                 )
                 stats_tracker.scalar(**train_stat)
 

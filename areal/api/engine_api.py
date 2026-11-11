@@ -530,6 +530,9 @@ class TrainEngine(abc.ABC):
         input_: list[dict[str, Any]] | dict[str, Any],
         loss_fn: Callable[..., torch.Tensor],
         loss_weight_fn: Callable[[dict[str, Any]], torch.Tensor],
+        *,
+        accumulation_steps: int = 1,
+        accumulation_index: int = 0,
     ) -> dict[str, float]:
         """Update the model with a batch of data and a loss function.
 
@@ -553,12 +556,23 @@ class TrainEngine(abc.ABC):
             loss_fn normalizes the loss for a micro-batch, we need a corresponding
             weight for each micro-batch to normalize the loss globally. The weight
             is usually the number of response tokens in the batch.
+        accumulation_steps : int
+            Consecutive chunk calls per optimizer update. Added for streaming
+            training when K > M and K % M == 0, where K is the number of chunks
+            per global step and M is actor.ppo_n_minibatches. In that path this
+            is K // M; other paths keep the default of one.
+        accumulation_index : int
+            Zero-based chunk position within the above streaming accumulation
+            window, not a microbatch index. Only its first call clears gradients;
+            only its last call normalizes, clips and steps. Each call packs its
+            own input independently. Defaults to zero.
 
         Returns
         -------
         dict[str, float]
             Scalar statistics after training, e.g., the current learning rate,
             gradient norm, etc.
+            Intermediate accumulation calls return an empty dictionary.
         """
         raise NotImplementedError()
 

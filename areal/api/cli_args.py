@@ -2601,8 +2601,8 @@ class InferenceEngineConfig:
             "a time. A value smaller than train_dataset.batch_size streams one "
             "logical training step in multiple batches; all batches keep the "
             "same rollout weight version and weight-sync boundary. The chunk "
-            "count must divide actor.ppo_n_minibatches so each chunk contains "
-            "complete PPO minibatches. None uses "
+            "count and actor.ppo_n_minibatches must divide one another; multiple "
+            "chunks per minibatch accumulate gradients before one update. None uses "
             "train_dataset.batch_size and preserves the non-streaming path."
         },
     )
@@ -3756,9 +3756,12 @@ class PPOConfig(BaseExperimentConfig):
         n_minibatches = self.actor.ppo_n_minibatches
         if n_minibatches <= 0:
             raise ValueError("actor.ppo_n_minibatches must be positive")
-        if n_minibatches % streaming_batch_count != 0:
+        if (
+            n_minibatches % streaming_batch_count != 0
+            and streaming_batch_count % n_minibatches != 0
+        ):
             raise ValueError(
-                "actor.ppo_n_minibatches must be divisible by the number "
+                "actor.ppo_n_minibatches must divide or be divisible by the number "
                 f"of streaming training batches, got {n_minibatches} and "
                 f"{streaming_batch_count}"
             )

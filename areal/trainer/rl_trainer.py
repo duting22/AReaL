@@ -309,7 +309,19 @@ class PPOTrainer:
         # Initialize engines first — the scheduler must know about roles
         # before the data controller can colocate with them.
         engine_init_kwargs = {"addr": None, "ft_spec": ft_spec}
-        self.actor.initialize(**engine_init_kwargs, role="actor")
+        actor_init_kwargs = dict(engine_init_kwargs)
+        streaming_batch_size = config.rollout.streaming_train_batch_size
+        if (
+            self.actor_alloc.backend == "megatron"
+            and streaming_batch_size is not None
+            and config.train_dataset.batch_size // streaming_batch_size
+            > config.actor.ppo_n_minibatches
+        ):
+            actor_init_kwargs["validate_gradient_accumulation"] = True
+            if config.actor._version == "v2":
+                # Complete the model checks before starting any rollout workers.
+                actor_init_kwargs["wait"] = True
+        self.actor.initialize(**actor_init_kwargs, role="actor")
         if self.critic is not None:
             self.critic.initialize(**engine_init_kwargs, role="critic")
         if self.ref is not None:
@@ -782,6 +794,7 @@ class PPOTrainer:
         streaming_train_batch_size = getattr(
             config.rollout, "streaming_train_batch_size", None
         )
+        actor_accumulation_steps = 1
         if streaming_train_batch_size is None:
             streaming_batch_count = 1
         else:
@@ -791,7 +804,15 @@ class PPOTrainer:
             actor_minibatches_per_streaming_batch = (
                 config.actor.ppo_n_minibatches // streaming_batch_count
             )
-        needs_policy_snapshot = streaming_batch_count > 1
+            if config.actor.ppo_n_minibatches < streaming_batch_count:
+                actor_accumulation_steps = (
+                    streaming_batch_count // config.actor.ppo_n_minibatches
+                )
+                actor_minibatches_per_streaming_batch = 1
+        # With one PPO minibatch, every logp forward precedes the sole update.
+        needs_policy_snapshot = (
+            streaming_batch_count > 1 and config.actor.ppo_n_minibatches > 1
+        )
         for global_step in range(start_step, max_steps):
             if (
                 config.total_train_steps is not None
@@ -940,6 +961,14 @@ class PPOTrainer:
                     if streaming_batch_count == 1:
                         self.actor.ppo_update(adv_batch)
                         self.actor.step_lr_scheduler()
+                    elif actor_accumulation_steps > 1:
+                        self.actor.ppo_update(
+                            adv_batch,
+                            n_minibatches=1,
+                            accumulation_steps=actor_accumulation_steps,
+                            accumulation_index=streaming_batch_index
+                            % actor_accumulation_steps,
+                        )
                     else:
                         self.actor.ppo_update(
                             adv_batch,

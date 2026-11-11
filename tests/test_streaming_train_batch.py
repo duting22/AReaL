@@ -90,7 +90,7 @@ def single_controller(monkeypatch):
         ({"chunk_size": 3}, "train_dataset.batch_size must be divisible"),
         (
             {"actor": PPOActorConfig(backend="fsdp:d1", ppo_n_minibatches=6)},
-            "actor.ppo_n_minibatches must be divisible",
+            "actor.ppo_n_minibatches must divide or be divisible",
         ),
         (
             {
@@ -122,8 +122,8 @@ def test_streaming_configuration_rejects_invalid_batch_contracts(overrides, erro
         _config(**overrides)
 
 
-@pytest.mark.parametrize("n_minibatches", [4, 8])
-def test_streaming_configuration_accepts_complete_minibatches_per_chunk(n_minibatches):
+@pytest.mark.parametrize("n_minibatches", [1, 2, 4, 8])
+def test_streaming_configuration_accepts_both_chunk_minibatch_relations(n_minibatches):
     _config(actor=PPOActorConfig(backend="fsdp:d1", ppo_n_minibatches=n_minibatches))
 
 
@@ -169,6 +169,7 @@ def test_batch_normalization_warning_describes_chunk_scope(field, norm):
         (2, True, False, None, False),
         (2, True, True, "loglinear", False),
         (2, False, True, "recompute", True),
+        (2, True, True, "reuse", False),
     ],
 )
 def test_fp8_config_guard_only_applies_to_streaming_proximal_forward(
@@ -676,6 +677,7 @@ class _RecordingActor:
         self.weight = torch.tensor([0.0])
         self.snapshot = _ParameterSnapshot()
         self.updates = []
+        self.accumulation_calls = []
         self.logps = []
         self.cleared_batches = []
         self._exported_updates = 0
@@ -711,10 +713,14 @@ class _RecordingActor:
         self.snapshot.clear()
         self.events.append(("snapshot_clear",))
 
-    def ppo_update(self, batch, *, n_minibatches=8):
+    def ppo_update(
+        self, batch, *, n_minibatches=8, accumulation_steps=1, accumulation_index=0
+    ):
         self.updates.append(([item["sample"] for item in batch], n_minibatches))
+        self.accumulation_calls.append((accumulation_steps, accumulation_index))
         self.events.append(("update", self.chunk))
-        self.weight.add_(1)
+        if accumulation_index == accumulation_steps - 1:
+            self.weight.add_(1)
 
     def update_weights(self, meta):
         self.events.append(("publish", meta.version, len(self.updates)))
@@ -877,6 +883,7 @@ def test_single_chunk_retains_full_batch_trainer_calls(trainer_factory, chunk_si
     trainer = trainer_factory(chunk_size=chunk_size, recompute=True, critic=True)
     trainer.train(workflow=object())
     assert trainer.actor.updates == [(list(range(8)), 8)]
+    assert trainer.actor.accumulation_calls == [(1, 0)]
     assert trainer.actor.logps == [(1, 0.0, False)]
     assert not any(
         event[0] in {"capture", "snapshot_clear"} for event in trainer.actor.events
@@ -886,7 +893,29 @@ def test_single_chunk_retains_full_batch_trainer_calls(trainer_factory, chunk_si
     assert trainer.stats_logger.commit.call_args.args[3]["timeperf/train_step"] == 2.0
 
 
-@pytest.mark.parametrize("n_minibatches", [4, 8])
+@pytest.mark.parametrize("n_minibatches", [1, 2])
+def test_chunks_accumulate_until_each_minibatch_boundary(
+    trainer_factory, n_minibatches
+):
+    trainer = trainer_factory(n_minibatches=n_minibatches, critic=True, recompute=True)
+    trainer.train(workflow=object())
+    accumulation_steps = 4 // n_minibatches
+    assert trainer.actor.accumulation_calls == [
+        (accumulation_steps, index % accumulation_steps) for index in range(4)
+    ]
+    assert all(count == 1 for _, count in trainer.actor.updates)
+    torch.testing.assert_close(
+        trainer.actor.weight, torch.tensor([float(n_minibatches)]), rtol=0, atol=0
+    )
+    assert trainer.actor.events.count(("actor_lr",)) == 1
+    assert trainer.actor.events.count(("critic_lr",)) == 1
+    assert ("critic_update", tuple(range(8))) in trainer.actor.events
+    assert len([e for e in trainer.actor.events if e[0] == "publish"]) == 1
+    assert trainer.actor.cleared_batches == [(tuple(range(8)), tuple(range(8)))]
+    assert all(value == 0 for _, value, _ in trainer.actor.logps)
+
+
+@pytest.mark.parametrize("n_minibatches", [1, 2, 8])
 def test_lr_and_weight_publication_advance_only_at_logical_batch_boundaries(
     trainer_factory,
     n_minibatches,
@@ -925,7 +954,7 @@ def test_lr_and_weight_publication_advance_only_at_logical_batch_boundaries(
 @pytest.mark.parametrize(
     "recompute", [False, True], ids=["skip-forward", "fixed-policy-forward"]
 )
-@pytest.mark.parametrize("n_minibatches", [4, 8])
+@pytest.mark.parametrize("n_minibatches", [1, 2, 8])
 def test_proximal_forward_uses_fixed_weights_without_losing_actor_updates(
     trainer_factory, recompute, n_minibatches, monkeypatch
 ):
@@ -935,7 +964,7 @@ def test_proximal_forward_uses_fixed_weights_without_losing_actor_updates(
         recompute=recompute, steps=steps, n_minibatches=n_minibatches
     )
     actor = trainer.actor
-    needs_snapshot = recompute
+    needs_snapshot = recompute and n_minibatches > 1
     if not needs_snapshot:
 
         def unexpected_snapshot(*_args, **_kwargs):
@@ -948,7 +977,7 @@ def test_proximal_forward_uses_fixed_weights_without_losing_actor_updates(
         monkeypatch.setattr(actor.snapshot, "activate", unexpected_snapshot)
     trainer.train(workflow=object())
     # This recording actor changes once per completed call/window.
-    updates_per_step = 4
+    updates_per_step = min(n_minibatches, 4)
     if recompute:
         assert actor.logps == [
             (
@@ -1103,14 +1132,23 @@ def test_actor_controllers_forward_snapshot_lifecycle_and_logp_flag(controller_t
 
 
 @pytest.mark.parametrize("override", [False, True], ids=["default", "chunk-override"])
+@pytest.mark.parametrize("accumulation_steps", [1, 2])
 def test_real_actor_preserves_complete_minibatches_inside_each_chunk(
-    quiet_instrumentation, override
+    quiet_instrumentation, override, accumulation_steps
 ):
     """Each optimizer call receives complete sequences from only one chunk."""
     minibatches = []
+    accumulation_calls = []
 
     def record_update(batch, **_kwargs):
         minibatches.append(batch["input_ids"].clone())
+        accumulation_calls.append(
+            {
+                key: value
+                for key, value in _kwargs.items()
+                if key.startswith("accumulation_")
+            }
+        )
         return {}
 
     engine = SimpleNamespace(
@@ -1139,14 +1177,50 @@ def test_real_actor_preserves_complete_minibatches_inside_each_chunk(
             for sample in range(start, start + 4)
         ]
         kwargs = {"n_minibatches": 2} if override else {}
+        if accumulation_steps > 1:
+            kwargs = dict(
+                n_minibatches=1,
+                accumulation_steps=accumulation_steps,
+                accumulation_index=start // 4,
+            )
         actor.ppo_update(trajectories, **kwargs)
-        count = 2
+        count = 1 if accumulation_steps > 1 else 2
         chunk_minibatches = minibatches[-count:]
         assert len(minibatches) == (start // 4 + 1) * count
         assert [tuple(batch.shape) for batch in chunk_minibatches] == [
             (4 // count, 4)
         ] * count
+        assert accumulation_calls[-1] == (
+            dict(accumulation_steps=2, accumulation_index=start // 4)
+            if accumulation_steps > 1
+            else {}
+        )
         rows = torch.cat(chunk_minibatches)
         rows = rows[rows[:, 0].argsort()]
         expected = torch.arange(start, start + 4)[:, None].expand(4, 4)
         torch.testing.assert_close(rows, expected, rtol=0, atol=0)
+
+
+def test_actor_rejects_multiple_minibatches_per_accumulated_chunk():
+    actor = PPOActor(PPOActorConfig(backend="fsdp:d1", ppo_n_minibatches=2), Mock())
+    with pytest.raises(ValueError, match="requires n_minibatches=1"):
+        actor.ppo_update([], accumulation_steps=2)
+
+
+@pytest.mark.parametrize("controller_type", [PPOActorController, PPOActorControllerV2])
+def test_actor_controllers_forward_accumulation_window(controller_type):
+    controller = controller_type.__new__(controller_type)
+    if controller_type is PPOActorController:
+        controller._custom_function_call = Mock()
+    else:
+        controller._gateway_post = Mock()
+    controller.ppo_update(
+        [], n_minibatches=1, accumulation_steps=4, accumulation_index=2
+    )
+    if controller_type is PPOActorController:
+        kwargs = controller._custom_function_call.call_args.kwargs
+    else:
+        _, payload = controller._gateway_post.call_args.args
+        kwargs = deserialize_value(payload["kwargs"])
+    assert kwargs["accumulation_steps"] == 4
+    assert kwargs["accumulation_index"] == 2
