@@ -1,6 +1,7 @@
 import argparse
 import copy
 import json
+import math
 import os
 import tempfile
 from functools import cache
@@ -22,6 +23,7 @@ from transformers import AutoTokenizer
 from areal.api import FinetuneSpec, SaveLoadMeta
 from areal.api.alloc_mode import ModelAllocation
 from areal.api.cli_args import (
+    DistributedDataParallelConfig,
     MegatronEngineConfig,
     MicroBatchSpec,
     OptimizerConfig,
@@ -149,7 +151,9 @@ def mock_input(
     )
 
 
-def make_engine(model_type, backend, mb_spec, vpp_size=1, init_optimizer=False):
+def make_engine(
+    model_type, backend, mb_spec, vpp_size=1, init_optimizer=False, megatron_config=None
+):
     bridge_type = _MODEL_BRIDGE_OVERRIDES.get(model_type, "mbridge")
     config = TrainEngineConfig(
         backend=backend,
@@ -158,7 +162,8 @@ def make_engine(model_type, backend, mb_spec, vpp_size=1, init_optimizer=False):
         path=_get_model_path(model_type),
         mb_spec=mb_spec,
         optimizer=OptimizerConfig() if init_optimizer else None,
-        megatron=MegatronEngineConfig(
+        megatron=megatron_config
+        or MegatronEngineConfig(
             virtual_pipeline_parallel_size=vpp_size,
             bridge_type=bridge_type,
         ),
@@ -419,6 +424,130 @@ def test_grad_norm_mb_invariance(
         f"Test: test_grad_norm_mb_invariance(model_type={model_type}, "
         f"alloc_mode={alloc_mode}) Done."
     )
+
+
+def test_parameter_snapshot(
+    model_type: str, alloc_mode: str, output: str | None = None, vpp_size: int = 1
+):
+    """DP=2/PP=2/VPP=2: switch policies with forward gather, then train again."""
+    rank = int(os.environ["RANK"])
+    engines = []
+    control_parameters = []
+    control_logp = None
+    ok = True
+    for use_snapshot in (False, True):
+        seeding.set_random_seed(0, key=f"engine{rank}")
+        engine = make_engine(
+            model_type,
+            alloc_mode,
+            MicroBatchSpec(n_mbs=4, max_tokens_per_mb=256),
+            init_optimizer=True,
+            vpp_size=vpp_size,
+            megatron_config=MegatronEngineConfig(
+                virtual_pipeline_parallel_size=vpp_size,
+                bridge_type="mbridge",
+                ddp=DistributedDataParallelConfig(
+                    use_distributed_optimizer=True,
+                    overlap_param_gather=True,
+                    align_param_gather=False,
+                ),
+                overlap_param_gather_with_optimizer_step=False,
+            ),
+        )
+        engines.append(engine)
+        assert mpu.get_data_parallel_world_size() == 2
+        assert mpu.get_pipeline_model_parallel_world_size() == 2
+        assert len(engine.model) == 2
+        seeding.set_random_seed(0, key=f"data{rank}")
+        input_ = mock_input(
+            batch_size=8,
+            min_seqlen=32,
+            max_seqlen=64,
+            device=engine.device,
+            vocab_size=getattr(
+                engine.hf_config, "text_config", engine.hf_config
+            ).vocab_size,
+        )
+        input_ = broadcast_tensor_container(
+            input_,
+            src_rank=engine.current_data_parallel_head(),
+            group=engine.context_and_model_parallel_group,
+        )
+
+        def forward():
+            engine.eval()
+            return engine.forward(
+                input_=input_, aggregate_fn=lambda xs: torch.cat(xs, dim=0)
+            )
+
+        def train():
+            nonlocal ok
+            engine.train()
+            stats = engine.train_batch(
+                input_=input_,
+                loss_fn=mock_loss_fn,
+                loss_weight_fn=lambda x: x["cu_seqlens"][-1],
+            )
+            if (
+                stats["update_successful"] != 1
+                or not math.isfinite(stats["grad_norm"])
+                or stats["grad_norm"] <= 0
+            ):
+                print(f"rank {rank} optimizer did not perform a valid update: {stats}")
+                ok = False
+            return stats
+
+        def check_close(actual, expected):
+            nonlocal ok
+            try:
+                torch.testing.assert_close(actual, expected, rtol=3e-3, atol=1e-6)
+            except AssertionError as exc:
+                print(f"rank {rank} snapshot parity failed: {exc}")
+                ok = False
+
+        initial_logp = forward().detach().cpu()
+        if use_snapshot:
+            check_close(initial_logp, control_logp)
+            engine.capture_parameter_snapshot()
+        else:
+            control_logp = initial_logp
+        train()
+
+        # Keep optimizer-step gather disabled: the supported MindSpeed stack
+        # must not hit the historical list.wait failure. Forward gather remains on.
+        if use_snapshot:
+            with engine.parameter_snapshot_context():
+                check_close(forward().detach().cpu(), initial_logp)
+            engine.clear_parameter_snapshot()
+        # A distinguishable policy change
+        # prevents no-op training/snapshot activation from passing old-logp checks.
+        updated_logp = forward().detach().cpu()
+        if torch.allclose(updated_logp, initial_logp, rtol=3e-3, atol=1e-6):
+            print(f"rank {rank} updated logp is indistinguishable from initial policy")
+            ok = False
+
+        for update_index in range(2):
+            parameters = {
+                name: parameter.detach().cpu()
+                for name, parameter in engine.model.named_parameters()
+            }
+            if use_snapshot:
+                for name, parameter in parameters.items():
+                    check_close(parameter, control_parameters[update_index][name])
+            else:
+                control_parameters.append(parameters)
+            if update_index == 0:
+                # Optimizer master state and gather scheduling must remain valid.
+                train()
+                forward()
+
+    verdict = torch.tensor(int(ok), dtype=torch.int32, device=engines[-1].device)
+    dist.all_reduce(verdict, op=dist.ReduceOp.MIN)
+    ok = bool(verdict.item())
+    for engine in reversed(engines):
+        engine.destroy()
+    if rank == 0 and output is not None:
+        write_result(output, ok)
 
 
 def test_train_dcp_save_load(
@@ -758,6 +887,7 @@ def main():
             "forward",
             "train",
             "grad_norm_mb_invariance",
+            "parameter_snapshot",
             "simple_dcp_save_load",
             "train_dcp_save_load",
             "train_hf_save_load",
@@ -788,6 +918,10 @@ def main():
             args.backend,
             output=args.output,
             vpp_size=args.vpp_size,
+        )
+    elif args.test_type == "parameter_snapshot":
+        test_parameter_snapshot(
+            args.model_type, args.backend, output=args.output, vpp_size=args.vpp_size
         )
     elif args.test_type == "simple_dcp_save_load":
         test_simple_dcp_save_load(

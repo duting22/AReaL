@@ -354,3 +354,18 @@ def test_qwen3_5_moe_hf_save_load(tmp_path_factory):
         test_type="train_hf_save_load",
         output=str(output),
     )
+
+
+@pytest.mark.slow
+def test_qwen3_parameter_snapshot(tmp_path_factory):
+    """Snapshot switching must preserve the next real distributed update."""
+    if current_platform.device_count() < 4:
+        pytest.skip("parameter snapshot gather overlap requires 4 NPUs")
+    output = tmp_path_factory.mktemp("test_output") / "qwen3_parameter_snapshot.out"
+    _run_test_with_torchrun(
+        "qwen3",
+        "megatron:d2p2t1",
+        test_type="parameter_snapshot",
+        output=str(output),
+        vpp_size=2,
+    )

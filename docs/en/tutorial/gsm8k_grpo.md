@@ -487,6 +487,71 @@ for global_step in range(start_step, max_steps):
 
 All algorithm operations are controller method calls that dispatch to remote workers.
 
+### Streaming chunks and PPO minibatches
+
+Enable the basic streaming path as follows (`ppo_n_minibatches=4` updates once per
+chunk):
+
+```yaml
+train_dataset:
+  batch_size: 64
+rollout:
+  consumer_batch_size: 64
+  streaming_train_batch_size: 16
+  max_head_offpolicyness: 0
+actor:
+  ppo_n_minibatches: 4
+dynamic_bs: false
+```
+
+The goal is to interleave rollout and actor training instead of waiting for the full
+batch. This requires single-controller mode and separate actor and rollout placement.
+When recomputing proximal log-probabilities, the pre-update rollout policy is kept in a
+CPU snapshot. During snapshot forward, current actor parameters are temporarily backed
+up to CPU and restored afterwards, avoiding an additional full parameter copy on the
+device. This uses more host memory and host/device transfers and does not guarantee a
+speedup for every configuration. This snapshot path does not support
+`actor.megatron.fp8_config.param=true`; FP8 training itself remains supported.
+
+Set `rollout.streaming_train_batch_size=S` to start actor work before the full
+`train_dataset.batch_size=B` prompt groups have finished rollout. Each chunk contains
+complete prompt groups, including all `n_samples` responses. Let `K=B/S` be the chunk
+count and `M=actor.ppo_n_minibatches` the number of optimizer updates per global step.
+`B` must be divisible by `S`, and `M` must be divisible by `K` (`K <= M`). Each chunk
+contains `M/K` complete PPO minibatches. For example, `B=64`, `S=16`, `M=8` performs two
+optimizer updates per chunk and eight updates per global step. Each complete PPO
+minibatch uses the existing microbatch packing and loss normalization.
+
+Streaming training supports FSDP and Megatron + MindSpeed with vLLM + vLLM-Ascend.
+Completed prompt groups can reach the actor in a different order from non-streaming
+training. Existing parallelism and microbatch budget constraints still apply, as do
+`rollout.max_head_offpolicyness=0` and `dynamic_bs=false`. Critic updates, LR
+scheduling, rollout policy versions and weight synchronization retain their global-step
+boundaries. Omitting `streaming_train_batch_size` or setting it to `B` retains
+non-streaming behavior.
+
+Use the dependencies pinned by the target Ascend Dockerfiles. Existing multi-teacher
+mixture/domain routing is retained; domain-routed teacher batches must satisfy their
+existing runtime DP and microbatch budgets.
+
+Run CPU regressions with:
+
+```bash
+python -m pytest -v tests/test_streaming_train_batch.py
+```
+
+On the target Ascend stack, run the snapshot regressions with:
+
+```bash
+python -m pytest -v tests/test_megatron_parameter_snapshot.py
+python -m pytest -v tests/test_megatron_engine_distributed.py -k parameter_snapshot
+```
+
+The distributed test reuses the existing model resolver (environment override, existing
+local checkpoint, then Hugging Face download). It requires four NPUs and keeps forward
+parameter-gather overlap enabled while disabling optimizer-step gather overlap to avoid
+the MindSpeed `list.wait` incompatibility. CI configuration is unchanged.
+
 ## Weight Synchronization
 
 After each training step, updated weights must be synced to inference workers. AReaL

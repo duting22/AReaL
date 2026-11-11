@@ -217,6 +217,9 @@ def _prepare_multimodal_forward_inputs(
 
 
 class FSDPEngine(TrainEngine):
+    def _get_policy_model_parts(self) -> list[torch.nn.Module]:
+        return [self.model]
+
     def __init__(self, config: TrainEngineConfig):
         self.config = config
         self.optimizer_config = config.optimizer
